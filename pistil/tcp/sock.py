@@ -9,6 +9,7 @@ import os
 import socket
 import sys
 import time
+import stat
 
 from pistil import util
 
@@ -16,10 +17,9 @@ log = logging.getLogger(__name__)
 
 class BaseSocket(object):
     
-    def __init__(self, conf, fd=None):
+    def __init__(self, addr, conf, fd=None):
         self.conf = conf
-        self.address = util.parse_address(conf.get('address',
-            ('127.0.0.1', 8000)))
+        self.address = addr
         if fd is None:
             sock = socket.socket(self.FAMILY, socket.SOCK_STREAM)
         else:
@@ -73,15 +73,21 @@ class TCP6Socket(TCPSocket):
 class UnixSocket(BaseSocket):
     
     FAMILY = socket.AF_UNIX
-    
-    def __init__(self, conf, fd=None):
+ 
+    def __init__(self, addr, conf, fd=None):
         if fd is None:
             try:
-                os.remove(conf.address)
-            except OSError:
-                pass
-        super(UnixSocket, self).__init__(conf, fd=fd)
-    
+                st = os.stat(addr)
+            except OSError as e:
+                if e.args[0] != errno.ENOENT:
+                    raise
+            else:
+                if stat.S_ISSOCK(st.st_mode):
+                    os.remove(addr)
+                else:
+                    raise ValueError("%r is not a socket" % addr)
+        super(UnixSocket, self).__init__(addr, conf, fd=fd)    
+            
     def __str__(self):
         return "unix:%s" % self.address
         
@@ -104,7 +110,8 @@ def create_socket(conf):
     a TypeError is raised.
     """
     # get it only once
-    addr = conf.get("address", ('127.0.0.1', 8000))
+    addr = util.parse_address(conf.get('address',
+                                       ('127.0.0.1', 8000)))
     
     if isinstance(addr, tuple):
         if util.is_ipv6(addr[0]):
@@ -119,7 +126,7 @@ def create_socket(conf):
     if 'PISTIL_FD' in os.environ:
         fd = int(os.environ.pop('PISTIL_FD'))
         try:
-            return sock_type(conf, fd=fd)
+            return sock_type(addr, conf, fd=fd)
         except socket.error, e:
             if e[0] == errno.ENOTCONN:
                 log.error("PISTIL_FD should refer to an open socket.")
@@ -132,7 +139,7 @@ def create_socket(conf):
     
     for i in range(5):
         try:
-            return sock_type(conf)
+            return sock_type(addr, conf)
         except socket.error, e:
             if e[0] == errno.EADDRINUSE:
                 log.error("Connection in use: %s", str(addr))
